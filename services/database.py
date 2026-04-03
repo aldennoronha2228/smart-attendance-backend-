@@ -3,7 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -38,10 +38,38 @@ def load_embeddings() -> Dict:
 
 def _save_sample_image(name: str, sample_image: np.ndarray) -> str:
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    file_name = f"{_safe_name(name)}.jpg"
+    # Keep previous sample images instead of overwriting.
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    file_name = f"{_safe_name(name)}_{timestamp}.jpg"
     sample_path = SAMPLES_DIR / file_name
     cv2.imwrite(str(sample_path), sample_image)
     return str(sample_path)
+
+
+def get_student_embedding(name: str) -> Tuple[Optional[np.ndarray], int, Optional[str]]:
+    """Return (embedding_vector, samples_used, sample_image_path) for a student if present."""
+    database = load_embeddings()
+    payload = database.get(name)
+    if not isinstance(payload, dict):
+        return None, 0, None
+
+    samples_used = int(payload.get("samples_used", 0) or 0)
+    sample_image = payload.get("sample_image")
+    sample_image_path = sample_image if isinstance(sample_image, str) else None
+
+    raw = payload.get("embedding")
+    if not isinstance(raw, list) or not raw:
+        return None, samples_used, sample_image_path
+
+    try:
+        vector = np.asarray(raw, dtype=np.float32).flatten()
+    except Exception:
+        return None, samples_used, sample_image_path
+
+    if vector.size == 0:
+        return None, samples_used, sample_image_path
+
+    return vector, samples_used, sample_image_path
 
 
 def save_embedding(

@@ -10,7 +10,7 @@ import numpy as np
 
 # Import the student counter
 from student_counter import StudentCounter
-from services.database import list_students, save_embedding
+from services.database import get_student_embedding, list_students, save_embedding
 from services.recognition_service import RecognitionService
 from services.training_service import TrainingService
 
@@ -143,6 +143,12 @@ async def enroll_student(
     if not images:
         raise HTTPException(status_code=400, detail="At least one image is required")
 
+    if len(images) > 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 10 images allowed per training request",
+        )
+
     logger.info("Starting enrollment for '%s' with %d image(s)", student_name, len(images))
 
     decoded_images: List[np.ndarray] = []
@@ -201,12 +207,29 @@ async def enroll_student(
             },
         )
 
-    avg_embedding = training_service.compute_average_embedding(training_result["embeddings"])
+    new_avg_embedding = training_service.compute_average_embedding(training_result["embeddings"])
+
+    existing_embedding, existing_samples, _ = get_student_embedding(student_name)
+    combined_samples = int(existing_samples) + int(valid_images)
+
+    if existing_embedding is not None and existing_samples > 0 and existing_embedding.shape == new_avg_embedding.shape:
+        # Merge embeddings without deleting prior samples (running weighted average).
+        merged = (existing_embedding * float(existing_samples)) + (new_avg_embedding * float(valid_images))
+        merged = merged / float(combined_samples)
+
+        # Normalize for stable cosine similarity comparisons.
+        norm = float(np.linalg.norm(merged))
+        if norm > 0:
+            merged = merged / norm
+
+        final_embedding = merged
+    else:
+        final_embedding = new_avg_embedding
 
     save_embedding(
         name=student_name,
-        embedding=avg_embedding,
-        samples_used=valid_images,
+        embedding=final_embedding,
+        samples_used=combined_samples,
         sample_image=training_result["sample_image"],
     )
 
@@ -221,6 +244,7 @@ async def enroll_student(
         "message": "Enrollment successful",
         "valid_images": valid_images,
         "skipped_images": skipped_images,
+        "total_samples": combined_samples,
     }
 
 
